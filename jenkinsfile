@@ -1,0 +1,119 @@
+pipeline {
+    agent any
+    
+    parameters {
+        choice(name: 'operation', choices: ['Create a new IAM user with a new access key', 'Create a new access key for an existing IAM user', 'Delete old access keys for an IAM user', 'Delete an IAM user', 'Create multiple IAM users with new access keys', 'Delete multiple IAM users'], description: 'Select an operation:')
+        string(name: 'awsRegion', defaultValue: 'us-east-1', description: 'Enter the AWS region (e.g., us-east-1)')
+    }
+    
+    environment {
+        AWS_ACCESS_KEY_ID = credentials('aws-access-key-id')
+        AWS_SECRET_ACCESS_KEY = credentials('aws-secret-access-key')
+    }
+    
+    stages {
+        stage('Create New IAM User') {
+            when {
+                expression { params.operation == 'Create a new IAM user with a new access key' }
+            }
+            steps {
+                script {
+                    def newUserName = input(message: 'Enter the new IAM username:', parameters: [string(name: 'newUserName', defaultValue: '', description: '')])
+                    sh "aws iam create-user --user-name ${newUserName} --region ${params.awsRegion}"
+                    def accessKeyId = sh(script: "aws iam create-access-key --user-name ${newUserName} --query 'AccessKey.AccessKeyId' --output text --region ${params.awsRegion}", returnStdout: true).trim()
+                    echo "IAM user '${newUserName}' created successfully with access key ID: ${accessKeyId}"
+                }
+            }
+        }
+        
+        stage('Create New Access Key') {
+            when {
+                expression { params.operation == 'Create a new access key for an existing IAM user' }
+            }
+            steps {
+                script {
+                    def existingUserName = input(message: 'Enter the existing IAM username:', parameters: [string(name: 'existingUserName', defaultValue: '', description: '')])
+                    def accessKeyId = sh(script: "aws iam create-access-key --user-name ${existingUserName} --query 'AccessKey.AccessKeyId' --output text --region ${params.awsRegion}", returnStdout: true).trim()
+                    echo "New access key created for IAM user '${existingUserName}' with access key ID: ${accessKeyId}"
+                }
+            }
+        }
+        
+        stage('Delete Old Access Keys') {
+            when {
+                expression { params.operation == 'Delete old access keys for an IAM user' }
+            }
+            steps {
+                script {
+                    def userNameToDeleteKeys = input(message: 'Enter the IAM username to delete old access keys:', parameters: [string(name: 'userNameToDeleteKeys', defaultValue: '', description: '')])
+                    def deletedKeys = sh(script: "aws iam list-access-keys --user-name ${userNameToDeleteKeys} --query 'AccessKeyMetadata[?CreateDate<`$(date -d "-3 days" +%Y-%m-%dT%H:%M:%SZ")`].[AccessKeyId]' --output text --region ${params.awsRegion} | xargs -I keyId aws iam delete-access-key --user-name ${userNameToDeleteKeys} --access-key-id keyId --region ${params.awsRegion}", returnStatus: true)
+                    if (deletedKeys == 0) {
+                        echo "Old access keys deleted successfully for IAM user '${userNameToDeleteKeys}'."
+                    } else {
+                        error "Failed to delete old access keys for IAM user '${userNameToDeleteKeys}'."
+                    }
+                }
+            }
+        }
+        
+        stage('Delete IAM User') {
+            when {
+                expression { params.operation == 'Delete an IAM user' }
+            }
+            steps {
+                script {
+                    def userNameToDelete = input(message: 'Enter the IAM username to delete:', parameters: [string(name: 'userNameToDelete', defaultValue: '', description: '')])
+                    sh "aws iam list-access-keys --user-name ${userNameToDelete} --query 'AccessKeyMetadata[*].[AccessKeyId]' --output text --region ${params.awsRegion} | xargs -I keyId aws iam delete-access-key --user-name ${userNameToDelete} --access-key-id keyId --region ${params.awsRegion}"
+                    def deletedUser = sh(script: "aws iam delete-user --user-name ${userNameToDelete} --region ${params.awsRegion}", returnStatus: true)
+                    if (deletedUser == 0) {
+                        echo "IAM user '${userNameToDelete}' and associated access keys deleted successfully."
+                    } else {
+                        error "Failed to delete IAM user '${userNameToDelete}'."
+                    }
+                }
+            }
+        }
+        
+        stage('Create Multiple IAM Users') {
+            when {
+                expression { params.operation == 'Create multiple IAM users with new access keys' }
+            }
+            steps {
+                script {
+                    def userNamesToCreate = input(message: 'Enter the IAM usernames separated by commas:', parameters: [string(name: 'userNamesToCreate', defaultValue: '', description: '')])
+                    userNamesToCreate.split(',').each { userName ->
+                        sh "aws iam create-user --user-name ${userName} --region ${params.awsRegion}"
+                        def accessKeyId = sh(script: "aws iam create-access-key --user-name ${userName} --query 'AccessKey.AccessKeyId' --output text --region ${params.awsRegion}", returnStdout: true).trim()
+                        echo "IAM user '${userName}' created successfully with access key ID: ${accessKeyId}"
+                    }
+                }
+            }
+        }
+        
+        stage('Delete Multiple IAM Users') {
+            when {
+                expression { params.operation == 'Delete multiple IAM users' }
+            }
+            steps {
+                script {
+                    def userNamesToDelete = input(message: 'Enter the IAM usernames separated by commas:', parameters: [string(name: 'userNamesToDelete', defaultValue: '', description: '')])
+                    userNamesToDelete.split(',').each { userName ->
+                        def deletedKeys = sh(script: "aws iam list-access-keys --user-name ${userName} --query 'AccessKeyMetadata[*].[AccessKeyId]' --output text --region ${params.awsRegion} | xargs -I keyId aws iam delete-access-key --user-name ${userName} --access-key-id keyId --region ${params.awsRegion}", returnStatus: true)
+                        if (deletedKeys == 0) {
+                            sh "aws iam delete-user --user-name ${userName} --region ${params.awsRegion}"
+                            echo "IAM user '${userName}' and associated access keys deleted successfully."
+                        } else {
+                            error "Failed to delete IAM user '${userName}'."
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            echo 'AWS IAM operations completed.'
+        }
+    }
+}
